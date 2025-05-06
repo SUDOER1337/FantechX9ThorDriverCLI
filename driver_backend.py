@@ -1,15 +1,18 @@
 import usb.core
 import usb.util
-
+import configparser
+import argparse
+import os
+import re
 
 class Driver(object):
     def __init__(self):
         self.x9_vendorid = 0x18f8  # vendorid
-        self.x9_productid = 0x1086  # productid
-        self.bmRequestType = 0x21  # bmRequestType
-        self.bRequest = 0x09  # bRequest
-        self.wValue = 0x0307  # wValue
-        self.wIndex = 0x0001  # wIndex
+        self.x9_productid = 0x0fc0  # productid
+        self.bmRequestType = 0x21
+        self.bRequest = 0x09
+        self.wValue = 0x0307
+        self.wIndex = 0x0001
 
         self.conquered = False
         self.device_busy = bool()
@@ -35,7 +38,6 @@ class Driver(object):
         except usb.core.USBError as exception:
             print(exception.strerror)
             if exception.errno == 13:
-                # usb.backend.libusb1.LIBUSB_ERROR_ACCESS as e
                 print("Try adding a udev rule for your mouse, follow the guide here https://wiki.archlinux.org/index.php/udev#Accessing_firmware_programmers_and_USB_virtual_comm_devicesrunning. Running as root will probably work too but not recommended")
             return -1
         except AttributeError:
@@ -51,7 +53,6 @@ class Driver(object):
             self.conquered = True
 
     def liberate(self):
-        self.conquered
         if self.conquered:
             try:
                 usb.util.release_interface(self.mouse, self.wIndex)
@@ -125,7 +126,6 @@ class Driver(object):
         return byte
 
     def set_dpi_this_profile(self, DPI, profile_to_modify):
-        '''DPI is set to the value that is closest to one of the mouse's supported values'''
         internal_dpi = 0
         best_match_dpi = self.find_closest_dpi(DPI)
         if best_match_dpi >= 200 and best_match_dpi <= 1200:
@@ -160,7 +160,6 @@ class Driver(object):
 
     def send_payload(self, payload):
         self.mouse.ctrl_transfer(self.bmRequestType, self.bRequest, self.wValue, self.wIndex, payload)
-        # print([hex(i) for i in payload])
 
     def find_closest_dpi(self, DPI):
         if DPI in self.supported_dpis:
@@ -170,33 +169,148 @@ class Driver(object):
         best_match = int()
         for supported in self.supported_dpis:
             temp_diff = DPI - supported
-            # print(temp_diff if temp_diff > 0 else temp_diff * -1)
             if (difference >= (temp_diff if temp_diff > 0 else temp_diff * -1)):
                 best_match = supported
                 difference = temp_diff
         return best_match
 
+    # -------------- NEW: Apply config from driver.conf --------------
+    def apply_config_from_file(self, conf_path="driver.conf"):
+        if not os.path.exists(conf_path):
+            print(f"Config file '{conf_path}' not found!")
+            return
+
+        config = configparser.ConfigParser()
+        config.read(conf_path)
+
+        # Active Profile (1-based)
+        try:
+            self.current_active_profile = int(config["Active_Profile"]["profile"])
+        except Exception as e:
+            print("Error reading active profile:", e)
+            self.current_active_profile = 1
+
+        # DPIs
+        try:
+            for i in range(6):
+                key = f"profile_{i+1}"
+                dpi = int(config["Profile_DPIs"].get(key, "1200"))
+                # Set DPI for each profile (0-based for function)
+                payload = self.create_dpi_profile_config(dpi, i)
+                self.send_payload(payload)
+        except Exception as e:
+            print("Error applying DPIs:", e)
+
+        # Profile States (enable/disable)
+        try:
+            for i in range(6):
+                key = f"profile_{i+1}"
+                state = int(config["Profile_States"].get(key, "1"))
+                self.profile_states[i] = state
+        except Exception as e:
+            print("Error applying profile states:", e)
+
+        # Profile Colors
+        try:
+            for i in range(6):
+                key = f"profile_{i+1}"
+                colorstr = config["Profile_Colors"].get(key, "rgb(255,255,255)")
+                match = re.match(r"rgb\((\d+),(\d+),(\d+)\)", colorstr)
+                if match:
+                    r, g, b = map(int, match.groups())
+                else:
+                    r, g, b = 255, 255, 255
+                payload = self.create_color_profile_config(i+1, r, g, b)
+                self.send_payload(payload)
+        except Exception as e:
+            print("Error applying profile colors:", e)
+
+        # Color Scheme
+        try:
+            scheme_type = config["Color_Scheme"].get("type", "Static")
+            scheme_duration = int(config["Color_Scheme"].get("duration", "1"))
+        except Exception as e:
+            print("Error reading color scheme, using defaults:", e)
+            scheme_type = "Static"
+            scheme_duration = 1
+
+        # Cyclic Colors
+        try:
+            cyclic_colors_section = config["Cyclic_Colors"]
+            # Update internal state for cyclic colors
+            for k in self.cyclic_colors.keys():
+                val = cyclic_colors_section.get(k.lower(), "1")
+                self.cyclic_colors[k] = int(val)
+        except Exception as e:
+            print("Error applying cyclic colors:", e)
+
+        # Apply RGB lighting mode (scheme_type, scheme_duration)
+        payload = self.create_rgb_lights_config(scheme_type, scheme_duration)
+        self.send_payload(payload)
+
+        print(f"Config from '{conf_path}' has been sent to mouse (active profile {self.current_active_profile})")
 
 class Driver_API(Driver):
-    '''The sole purpose of this class is to give the frontend access to the Driver
-    class. Unless present the super().__init__ call defaults to the Gtk.Wondow
-    class according to the MRO'''
     def __init__():
         super().__init__()
 
+if __name__ == "__main__":
+    driver = Driver()
+    parser = argparse.ArgumentParser(description="Control your mouse settings from CLI")
 
-# driver = Driver()
-# for i in range(200, 4801, 200):
-#     print(i, driver.find_closest_dpi(i))
-# driver.find_device()
-# driver.device_state()
-# payload = driver.create_color_profile_config(3, 255, 255, 255)
-# print(payload)
-# driver.send_payload(payload)
-#
-# payload = driver.create_rgb_lights_config("Cyclic", 1)
-# print(payload)
-# driver.send_payload(payload)
-#
-# # driver.set_active_profiles(1, 1, 1, 1, 1, 1)
-# driver.send_payload(driver.create_dpi_profile_config(6, 600, 6))
+    subparsers = parser.add_subparsers(dest="command")
+
+    # --- Find Device ---
+    find_parser = subparsers.add_parser("find", help="Find and check device state")
+
+    # --- Set DPI ---
+    dpi_parser = subparsers.add_parser("set-dpi", help="Set DPI for a profile")
+    dpi_parser.add_argument("dpi", type=int, help="Desired DPI value")
+    dpi_parser.add_argument("profile", type=int, help="Profile number (0-5)")
+
+    # --- Set RGB Lighting ---
+    rgb_parser = subparsers.add_parser("set-rgb", help="Set RGB lighting mode")
+    rgb_parser.add_argument("mode", choices=["Fixed", "Cyclic", "Static", "Off"], help="Lighting mode")
+    rgb_parser.add_argument("speed", type=int, nargs="?", default=1, help="Transition speed (1-10)")
+
+    # --- Set Color Profile ---
+    color_parser = subparsers.add_parser("set-color", help="Set RGB color for a profile")
+    color_parser.add_argument("profile", type=int, help="Profile number (1-6)")
+    color_parser.add_argument("red", type=int, help="Red value (0-255)")
+    color_parser.add_argument("green", type=int, help="Green value (0-255)")
+    color_parser.add_argument("blue", type=int, help="Blue value (0-255)")
+
+    # --- Apply config from file ---
+    preset_parser = subparsers.add_parser("preset", help="Apply configuration from driver.conf")
+    preset_parser.add_argument("--conf", type=str, default="driver.conf", help="Path to config file (default: driver.conf)")
+
+    args = parser.parse_args()
+
+    driver.find_device()
+    if driver.device_state() != 1:
+        exit(1)
+
+    driver.conquer()
+
+    if args.command == "find":
+        print("Device found and ready!")
+
+    elif args.command == "set-dpi":
+        payload = driver.create_dpi_profile_config(args.dpi, args.profile)
+        driver.send_payload(payload)
+        print(f"DPI for profile {args.profile} set to {args.dpi}.")
+
+    elif args.command == "set-rgb":
+        payload = driver.create_rgb_lights_config(args.mode, args.speed)
+        driver.send_payload(payload)
+        print(f"Lighting mode set to {args.mode} with speed {args.speed}.")
+
+    elif args.command == "set-color":
+        payload = driver.create_color_profile_config(args.profile, args.red, args.green, args.blue)
+        driver.send_payload(payload)
+        print(f"Set profile {args.profile} color to R:{args.red} G:{args.green} B:{args.blue}.")
+
+    elif args.command == "preset":
+        driver.apply_config_from_file(args.conf)
+
+    driver.liberate()
