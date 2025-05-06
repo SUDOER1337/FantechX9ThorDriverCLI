@@ -2,7 +2,7 @@
 
 This is an open-source driver for the Fantech X9 Thor RGB gaming mouse targeted for linux systems (although it should work in any environment that supports gtk).
 
-#This fork customized to have Command `preset` , running it will set it to 3rd profile you set
+#This fork customized to have Command `preset` , running it will set it to 3rd profile you set ``python driver_backend.py preset`` 
 
 ### Requirements
 
